@@ -1,0 +1,32 @@
+---
+# Global variables for all environments
+
+# Application
+app_version: "2.0.0"
+app_user: oracle
+app_group: oinstall
+
+# Python
+python_version: "3.8"
+
+# WebLogic
+wlst_path: "/u01/oracle/middleware/oracle_common/common/bin/wlst.sh"
+
+# Application configuration
+cache_ttl: 15
+refresh_interval: 15000
+
+# Ports
+backend_port: 8000
+nginx_http_port: 80
+nginx_https_port: 443
+
+# Uvicorn
+uvicorn_workers: 4
+
+# Logging
+log_dir: /var/log/weblogic-monitor
+log_retention_days: 30
+
+# Firewall
+configure_firewall: true

@@ -1,0 +1,20 @@
+---
+# Development-specific variables
+
+# Allowed origins (más permisivo para desarrollo)
+allowed_origins: "*"
+allowed_hosts: "localhost,192.168.1.200"
+
+# SSL (no usar en desarrollo)
+ssl_certificate: ""
+ssl_certificate_key: ""
+
+# Security (más relajado para desarrollo)
+enable_rate_limiting: false
+max_requests_per_minute: 100
+
+# Workers (menos para desarrollo)
+uvicorn_workers: 2
+
+# Monitoring
+enable_monitoring: false
