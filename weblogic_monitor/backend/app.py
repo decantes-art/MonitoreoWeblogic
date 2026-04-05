@@ -12,7 +12,62 @@ import asyncio
 import subprocess
 import json
 import time
+import os
+import logging
 from pathlib import Path
+from cryptography.fernet import Fernet
+
+# Logging configuration
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+def decrypt_password(password_file: str) -> Optional[str]:
+    """
+    Desencripta el password desde archivo encriptado
+    
+    Args:
+        password_file: Ruta al archivo de password encriptado
+        
+    Returns:
+        Password desencriptado o None si hay error
+    """
+    try:
+        # Determinar ruta de la encryption key
+        # Buscar en el directorio del proyecto
+        base_dir = Path(__file__).parent.parent
+        key_file = base_dir / 'secure' / '.encryption_key'
+        
+        # Si no existe, intentar ruta relativa
+        if not key_file.exists():
+            key_file = Path('./secure/.encryption_key')
+        
+        # Leer encryption key
+        with open(key_file, 'rb') as f:
+            key = f.read()
+        
+        # Leer password encriptado
+        password_path = Path(password_file)
+        if not password_path.is_absolute():
+            password_path = base_dir / password_file
+            
+        with open(password_path, 'rb') as f:
+            encrypted_password = f.read()
+        
+        # Desencriptar
+        fernet = Fernet(key)
+        password = fernet.decrypt(encrypted_password).decode()
+        
+        logger.info(f"Password desencriptado exitosamente para {password_file}")
+        return password
+        
+    except FileNotFoundError as e:
+        logger.error(f"Archivo no encontrado: {e}")
+        logger.error("Asegúrate de ejecutar setup_secure_password.sh primero")
+        return None
+    except Exception as e:
+        logger.error(f"Error desencriptando password: {e}")
+        return None
 
 app = FastAPI(title="WebLogic Monitor API", version="1.0.0")
 
@@ -31,15 +86,14 @@ metrics_cache = {}
 
 # WebLogic domains configuration
 DOMAINS_CONFIG = [
-    # Example configuration - replace with your actual domains
     {
-        "name": "ProductionDomain1",
-        "admin_url": "t3://prod-admin1.example.com:7001",
-        "username": "weblogic",
-        "password_file": "/secure/prod1_pass.txt",
-        "servers": ["AdminServer", "ManagedServer1", "ManagedServer2"]
-    },
-    # Add your 90 domains here
+        "name": "PRO1LADMS",
+        "admin_url": "t3://192.168.1.166:7004",
+        "username": "uamonmidkio",
+        "password_file": "secure/pro1_pass.txt",  # Ruta relativa al proyecto
+        "servers": ["AdminServer"]
+    }
+    # Agregar más dominios aquí siguiendo el mismo formato
 ]
 
 class ServerMetrics(BaseModel):
@@ -84,7 +138,7 @@ class DomainStatus(BaseModel):
 
 
 def create_wlst_script(domain_config: dict) -> str:
-    """Generate WLST Jython script for metrics collection"""
+    """Generate WLST Jython script for metrics collection (LEGACY - usa archivo)"""
     script = f"""
 import sys
 import json
@@ -237,6 +291,159 @@ except Exception as e:
     return script
 
 
+def create_wlst_script_with_password(domain_config: dict) -> str:
+    """Generate WLST Jython script usando password ya desencriptado"""
+    # Usar el password directamente del config (ya desencriptado)
+    password = domain_config.get('password', '')
+    
+    script = f"""
+import sys
+import json
+from datetime import datetime
+
+# Connection parameters
+admin_url = '{domain_config["admin_url"]}'
+username = '{domain_config["username"]}'
+password = '{password}'  # Password ya desencriptado
+
+metrics = {{
+    'domain': '{domain_config["name"]}',
+    'timestamp': str(datetime.now()),
+    'servers': [],
+    'applications': [],
+    'datasources': [],
+    'jms_destinations': []
+}}
+
+try:
+    # Connect to AdminServer
+    connect(username, password, admin_url)
+    
+    # Get ServerRuntime for each server
+    domainRuntime()
+    
+    servers = cmo.getServerRuntimes()
+    for server in servers:
+        server_metrics = {{
+            'name': server.getName(),
+            'state': server.getState(),
+            'health_state': server.getHealthState().getState(),
+            'uptime': server.getUptime() if server.getUptime() else 0,
+            'thread_pool': {{}},
+            'jvm': {{}}
+        }}
+        
+        # Thread Pool metrics
+        try:
+            cd('/ServerRuntimes/' + server.getName() + '/ThreadPoolRuntime/ThreadPoolRuntime')
+            server_metrics['thread_pool'] = {{
+                'total_threads': get('ExecuteThreadTotalCount'),
+                'idle_threads': get('ExecuteThreadIdleCount'),
+                'stuck_threads': get('StuckThreadCount'),
+                'hogging_threads': get('HoggingThreadCount'),
+                'pending_requests': get('PendingUserRequestCount')
+            }}
+        except Exception as e:
+            print('Error getting thread pool: ' + str(e))
+        
+        # JVM metrics
+        try:
+            cd('/ServerRuntimes/' + server.getName() + '/JVMRuntime/' + server.getName())
+            server_metrics['jvm'] = {{
+                'heap_used': get('HeapSizeCurrent'),
+                'heap_max': get('HeapSizeMax'),
+                'heap_free': get('HeapFreeCurrent'),
+                'heap_percent': get('HeapFreePercent'),
+                'total_threads': get('ThreadsCount') if hasattr(cmo, 'ThreadsCount') else 0
+            }}
+        except Exception as e:
+            print('Error getting JVM metrics: ' + str(e))
+        
+        metrics['servers'].append(server_metrics)
+    
+    # Application metrics
+    cd('/AppRuntimeStateRuntime/AppRuntimeStateRuntime')
+    app_runtimes = cmo.getApplicationRuntimes()
+    for app in app_runtimes:
+        app_name = app.getName()
+        app_metrics = {{
+            'name': app_name,
+            'state': app.getState(),
+            'open_sessions': 0,
+            'avg_response_time': None
+        }}
+        
+        # Get web app component runtimes
+        try:
+            components = app.getComponentRuntimes()
+            for comp in components:
+                if comp.getType() == 'WebAppComponentRuntime':
+                    app_metrics['open_sessions'] += comp.getOpenSessionsCurrentCount()
+                    
+                    # Try to get servlet stats
+                    servlets = comp.getServlets()
+                    if servlets and len(servlets) > 0:
+                        total_time = 0
+                        count = 0
+                        for servlet in servlets:
+                            exec_time = servlet.getExecutionTimeAverage()
+                            if exec_time > 0:
+                                total_time += exec_time
+                                count += 1
+                        if count > 0:
+                            app_metrics['avg_response_time'] = total_time / count
+        except Exception as e:
+            print('Error getting app component metrics: ' + str(e))
+        
+        metrics['applications'].append(app_metrics)
+    
+    # JDBC Datasource metrics
+    cd('/JDBCServiceRuntime/' + servers[0].getName())
+    datasources = cmo.getJDBCDataSourceRuntimeMBeans()
+    for ds in datasources:
+        ds_metrics = {{
+            'name': ds.getName(),
+            'active_connections': ds.getActiveConnectionsCurrentCount(),
+            'available_connections': ds.getActiveConnectionsCurrentCount(),
+            'waiters': ds.getWaitingForConnectionCurrentCount(),
+            'capacity': ds.getCurrCapacity(),
+            'failures': ds.getFailuresToReconnectCount()
+        }}
+        metrics['datasources'].append(ds_metrics)
+    
+    # JMS Destination metrics
+    try:
+        cd('/JMSRuntime/' + servers[0].getName())
+        jms_servers = cmo.getJMSServers()
+        for jms_server in jms_servers:
+            destinations = jms_server.getDestinations()
+            for dest in destinations:
+                dest_metrics = {{
+                    'destination': dest.getName(),
+                    'current_messages': dest.getMessagesCurrentCount(),
+                    'pending_messages': dest.getMessagesPendingCount(),
+                    'delayed_messages': dest.getMessagesDelayedCount() if hasattr(dest, 'getMessagesDelayedCount') else 0,
+                    'consumers': dest.getConsumersCurrentCount()
+                }}
+                metrics['jms_destinations'].append(dest_metrics)
+    except Exception as e:
+        print('Error getting JMS metrics: ' + str(e))
+    
+    # Disconnect
+    disconnect()
+    
+    # Output JSON
+    print('METRICS_JSON_START')
+    print(json.dumps(metrics))
+    print('METRICS_JSON_END')
+    
+except Exception as e:
+    print('ERROR: ' + str(e))
+    sys.exit(1)
+"""
+    return script
+
+
 async def collect_domain_metrics(domain_config: dict) -> Optional[DomainStatus]:
     """Execute WLST script and parse results"""
     cache_key = domain_config['name']
@@ -247,8 +454,18 @@ async def collect_domain_metrics(domain_config: dict) -> Optional[DomainStatus]:
         if time.time() - cached_time < CACHE_TTL:
             return cached_data
     
+    # Desencriptar password ANTES de generar el script
+    password = decrypt_password(domain_config['password_file'])
+    if not password:
+        logger.error(f"No se pudo desencriptar password para {domain_config['name']}")
+        return None
+    
+    # Crear una copia temporal del config con el password desencriptado
+    temp_config = domain_config.copy()
+    temp_config['password'] = password  # Agregar password desencriptado
+    
     # Generate WLST script
-    script = create_wlst_script(domain_config)
+    script = create_wlst_script_with_password(temp_config)
     script_path = f"/tmp/wlst_collect_{domain_config['name']}.py"
     
     with open(script_path, 'w') as f:
