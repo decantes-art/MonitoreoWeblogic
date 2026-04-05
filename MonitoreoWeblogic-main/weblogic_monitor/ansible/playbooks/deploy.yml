@@ -1,0 +1,68 @@
+---
+- name: Deploy WebLogic Monitor Dashboard
+  hosts: dashboard_servers
+  become: yes
+  
+  vars_prompt:
+    - name: "deployment_version"
+      prompt: "¿Qué versión desplegar? (basic/secure)"
+      private: no
+      default: "secure"
+  
+  pre_tasks:
+    - name: Validate deployment environment
+      assert:
+        that:
+          - environment is defined
+          - environment in ['development', 'production']
+        fail_msg: "Environment must be 'development' or 'production'"
+    
+    - name: Display deployment info
+      debug:
+        msg: |
+          ================================================
+          Deploying WebLogic Monitor
+          ================================================
+          Environment: {{ environment }}
+          Version: {{ deployment_version }}
+          Target Host: {{ ansible_host }}
+          Install Dir: {{ install_dir }}
+          ================================================
+  
+  roles:
+    - role: weblogic-monitor
+      tags: ['install', 'configure']
+
+  post_tasks:
+    - name: Wait for application to start
+      wait_for:
+        port: "{{ backend_port }}"
+        delay: 5
+        timeout: 60
+      
+    - name: Verify deployment with health check
+      uri:
+        url: "http://localhost:{{ backend_port }}/api/health"
+        method: GET
+        status_code: 200
+      register: health_check
+      retries: 3
+      delay: 5
+      
+    - name: Display health check result
+      debug:
+        msg: |
+          ================================================
+          Deployment Successful!
+          ================================================
+          Status: {{ health_check.json.status }}
+          Version: {{ health_check.json.version | default('N/A') }}
+          Timestamp: {{ health_check.json.timestamp }}
+          ================================================
+          
+          Access dashboard at:
+          {% if enable_https %}
+          https://{{ allowed_hosts.split(',')[0] }}
+          {% else %}
+          http://{{ ansible_host }}
+          {% endif %}

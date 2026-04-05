@@ -1,0 +1,17 @@
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+python-multipart==0.0.6
+aiofiles==23.2.1
+
+# Security packages
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+cryptography==41.0.7
+slowapi==0.1.9
+python-dotenv==1.0.0
+
+# OPTIONAL: Para integración con servicios externos
+# hvac==1.2.1  # HashiCorp Vault
+# python-ldap==3.4.3  # LDAP authentication
+# redis==5.0.1  # Para cache distribuido
